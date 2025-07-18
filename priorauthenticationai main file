@@ -1,0 +1,682 @@
+#!/usr/bin/env python3
+"""
+Prior Authorization Predictor MVP
+Single-file Flask application for predicting medication approval likelihood
+"""
+
+from flask import Flask, render_template_string, request, jsonify
+import json
+import random
+import numpy as np
+from datetime import datetime
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+import warnings
+
+warnings.filterwarnings('ignore')
+
+app = Flask(__name__)
+
+# Initialize AI model components
+model = RandomForestClassifier(n_estimators=50, random_state=42)
+med_encoder = LabelEncoder()
+insurance_encoder = LabelEncoder()
+diagnosis_encoder = LabelEncoder()
+model_trained = False
+
+# Mock database of medications with historical approval patterns
+
+# Mock database of medications with historical approval patterns
+MEDICATIONS_DB = {
+    "humira": {
+        "name": "Humira (adalimumab)",
+        "cost_tier": "high",
+        "common_diagnoses": ["rheumatoid_arthritis", "crohns_disease", "psoriasis"],
+        "approval_rates": {"commercial": 0.75, "medicare": 0.65, "medicaid": 0.55},
+        "common_denials": ["insufficient_trial", "not_formulary"]
+    },
+    "keytruda": {
+        "name": "Keytruda (pembrolizumab)",
+        "cost_tier": "very_high",
+        "common_diagnoses": ["lung_cancer", "melanoma", "bladder_cancer"],
+        "approval_rates": {"commercial": 0.85, "medicare": 0.80, "medicaid": 0.70},
+        "common_denials": ["off_label", "insufficient_documentation"]
+    },
+    "enbrel": {
+        "name": "Enbrel (etanercept)",
+        "cost_tier": "high",
+        "common_diagnoses": ["rheumatoid_arthritis", "psoriatic_arthritis", "ankylosing_spondylitis"],
+        "approval_rates": {"commercial": 0.70, "medicare": 0.60, "medicaid": 0.50},
+        "common_denials": ["step_therapy", "prior_auth_required"]
+    },
+    "ozempic": {
+        "name": "Ozempic (semaglutide)",
+        "cost_tier": "high",
+        "common_diagnoses": ["diabetes_type2", "obesity"],
+        "approval_rates": {"commercial": 0.80, "medicare": 0.75, "medicaid": 0.60},
+        "common_denials": ["not_covered", "alternative_available"]
+    },
+    "remicade": {
+        "name": "Remicade (infliximab)",
+        "cost_tier": "very_high",
+        "common_diagnoses": ["crohns_disease", "rheumatoid_arthritis", "ulcerative_colitis"],
+        "approval_rates": {"commercial": 0.75, "medicare": 0.70, "medicaid": 0.55},
+        "common_denials": ["biosimilar_required", "step_therapy"]
+    },
+    "rituxan": {
+        "name": "Rituxan (rituximab)",
+        "cost_tier": "very_high",
+        "common_diagnoses": ["lymphoma", "rheumatoid_arthritis", "multiple_sclerosis"],
+        "approval_rates": {"commercial": 0.85, "medicare": 0.80, "medicaid": 0.70},
+        "common_denials": ["off_label", "insufficient_trial"]
+    },
+    "copaxone": {
+        "name": "Copaxone (glatiramer)",
+        "cost_tier": "high",
+        "common_diagnoses": ["multiple_sclerosis"],
+        "approval_rates": {"commercial": 0.75, "medicare": 0.70, "medicaid": 0.60},
+        "common_denials": ["generic_available", "step_therapy"]
+    },
+    "harvoni": {
+        "name": "Harvoni (ledipasvir/sofosbuvir)",
+        "cost_tier": "very_high",
+        "common_diagnoses": ["hepatitis_c"],
+        "approval_rates": {"commercial": 0.90, "medicare": 0.85, "medicaid": 0.75},
+        "common_denials": ["sobriety_requirement", "liver_staging"]
+    },
+    "revlimid": {
+        "name": "Revlimid (lenalidomide)",
+        "cost_tier": "very_high",
+        "common_diagnoses": ["multiple_myeloma", "lymphoma"],
+        "approval_rates": {"commercial": 0.85, "medicare": 0.80, "medicaid": 0.70},
+        "common_denials": ["off_label", "pregnancy_program"]
+    },
+    "xeljanz": {
+        "name": "Xeljanz (tofacitinib)",
+        "cost_tier": "high",
+        "common_diagnoses": ["rheumatoid_arthritis", "psoriatic_arthritis", "ulcerative_colitis"],
+        "approval_rates": {"commercial": 0.65, "medicare": 0.55, "medicaid": 0.45},
+        "common_denials": ["black_box_warning", "step_therapy"]
+    }
+}
+
+# ICD-10 diagnosis codes mapped to common conditions
+DIAGNOSIS_CODES = {
+    "M05.9": "rheumatoid_arthritis",
+    "K50.9": "crohns_disease",
+    "L40.0": "psoriasis",
+    "C78.0": "lung_cancer",
+    "C43.9": "melanoma",
+    "C67.9": "bladder_cancer",
+    "M07.3": "psoriatic_arthritis",
+    "M45.9": "ankylosing_spondylitis",
+    "E11.9": "diabetes_type2",
+    "E66.9": "obesity",
+    "K51.9": "ulcerative_colitis",
+    "C85.9": "lymphoma",
+    "G35": "multiple_sclerosis",
+    "B18.2": "hepatitis_c",
+    "C90.0": "multiple_myeloma"
+}
+
+
+def generate_training_data():
+    """Generate synthetic training data based on real-world patterns"""
+    training_data = []
+
+    # Generate realistic training examples
+    for _ in range(500):  # 500 synthetic examples
+        # Random medication
+        med = random.choice(list(MEDICATIONS_DB.keys()))
+        med_data = MEDICATIONS_DB[med]
+
+        # Random patient data
+        age = random.randint(18, 85)
+        insurance = random.choice(['commercial', 'medicare', 'medicaid'])
+        diagnosis = random.choice(list(DIAGNOSIS_CODES.keys()))
+        diagnosis_condition = DIAGNOSIS_CODES[diagnosis]
+
+        # Calculate base probability using existing logic
+        base_rate = med_data["approval_rates"].get(insurance, 0.60)
+
+        # Age adjustment
+        age_adj = 0
+        if age < 25:
+            age_adj = -0.05
+        elif age > 65:
+            age_adj = 0.05
+
+        # Diagnosis match adjustment
+        diag_adj = 0.15 if diagnosis_condition in med_data["common_diagnoses"] else -0.10
+
+        # Cost tier adjustment
+        cost_adj = -0.05 if med_data["cost_tier"] == "very_high" else 0
+
+        # Final probability with some noise
+        prob = base_rate + age_adj + diag_adj + cost_adj + random.uniform(-0.1, 0.1)
+        prob = max(0.05, min(0.95, prob))
+
+        # Convert to approval (1) or denial (0)
+        approved = 1 if random.random() < prob else 0
+
+        training_data.append({
+            'medication': med,
+            'age': age,
+            'insurance': insurance,
+            'diagnosis': diagnosis,
+            'approved': approved,
+            'probability': prob
+        })
+
+    return training_data
+
+
+def train_ai_model():
+    """Train the AI model on synthetic data"""
+    global model, med_encoder, insurance_encoder, diagnosis_encoder, model_trained
+
+    # Generate training data
+    training_data = generate_training_data()
+
+    # Prepare features and labels
+    medications = [d['medication'] for d in training_data]
+    ages = [d['age'] for d in training_data]
+    insurances = [d['insurance'] for d in training_data]
+    diagnoses = [d['diagnosis'] for d in training_data]
+    labels = [d['approved'] for d in training_data]
+
+    # Encode categorical variables
+    med_encoded = med_encoder.fit_transform(medications)
+    insurance_encoded = insurance_encoder.fit_transform(insurances)
+    diagnosis_encoded = diagnosis_encoder.fit_transform(diagnoses)
+
+    # Create feature matrix
+    X = np.column_stack([med_encoded, ages, insurance_encoded, diagnosis_encoded])
+    y = np.array(labels)
+
+    # Train model
+    model.fit(X, y)
+    model_trained = True
+
+    print(f"AI Model trained on {len(training_data)} examples")
+    print(f"Model accuracy estimate: {model.score(X, y):.2f}")
+
+
+def ai_predict_approval(medication, age, diagnosis_code, insurance_type):
+    """AI-enhanced prediction using trained model + rule-based fallback"""
+    global model, med_encoder, insurance_encoder, diagnosis_encoder, model_trained
+
+    try:
+        # Normalize medication name for lookup
+        med_key = medication.lower().replace(" ", "").replace("(", "").replace(")", "")
+        med_key = med_key.split("(")[0]
+
+        # Find medication in database
+        matched_med = None
+        for key in MEDICATIONS_DB.keys():
+            if key in med_key or med_key in key:
+                matched_med = key
+                break
+
+        if not matched_med or not model_trained:
+            # Fallback to rule-based prediction
+            return rule_based_predict(medication, age, diagnosis_code, insurance_type)
+
+        # Prepare features for AI model
+        try:
+            # Handle unknown categories gracefully
+            med_encoded = med_encoder.transform([matched_med])[0] if matched_med in med_encoder.classes_ else 0
+            insurance_encoded = insurance_encoder.transform([insurance_type.lower()])[
+                0] if insurance_type.lower() in insurance_encoder.classes_ else 0
+            diagnosis_encoded = diagnosis_encoder.transform([diagnosis_code])[
+                0] if diagnosis_code in diagnosis_encoder.classes_ else 0
+
+            features = np.array([[med_encoded, age, insurance_encoded, diagnosis_encoded]])
+
+            # Get AI prediction probability
+            ai_prob = model.predict_proba(features)[0][1]  # Probability of approval
+
+            # Blend with rule-based prediction for robustness
+            rule_result = rule_based_predict(medication, age, diagnosis_code, insurance_type)
+            rule_prob = rule_result['probability']
+
+            # Weighted average: 70% AI, 30% rules
+            final_prob = 0.7 * ai_prob + 0.3 * rule_prob
+
+            # Use rule-based factors but update probability
+            result = rule_result.copy()
+            result['probability'] = round(final_prob, 2)
+
+            # Update confidence based on new probability
+            if final_prob >= 0.75:
+                result['confidence'] = "High"
+                result['level'] = "High likelihood of approval"
+            elif final_prob >= 0.50:
+                result['confidence'] = "Medium"
+                result['level'] = "Medium likelihood of approval"
+            else:
+                result['confidence'] = "Low"
+                result['level'] = "Low likelihood of approval"
+
+            # Add AI insight to factors
+            result['factors'].insert(0, f"🤖 AI confidence: {result['confidence']}")
+
+            return result
+
+        except Exception as e:
+            print(f"AI prediction error: {e}")
+            return rule_based_predict(medication, age, diagnosis_code, insurance_type)
+
+    except Exception as e:
+        print(f"AI model error: {e}")
+        return rule_based_predict(medication, age, diagnosis_code, insurance_type)
+
+
+def rule_based_predict(medication, age, diagnosis_code, insurance_type):
+    """
+    Core prediction logic - rule-based algorithm
+    Returns probability, confidence level, and key factors affecting approval
+    """
+
+    # Normalize inputs
+    med_key = medication.lower().replace(" ", "").replace("(", "").replace(")", "")
+    med_key = med_key.split("(")[0]  # Take first part if parentheses
+
+    # Find medication in database using fuzzy matching
+    med_data = None
+    for key, data in MEDICATIONS_DB.items():
+        if key in med_key or med_key in key:
+            med_data = data
+            break
+
+    # Unknown medication fallback
+    if not med_data:
+        return {
+            "probability": 0.50,
+            "confidence": "Low",
+            "factors": ["Unknown medication - manual review required"],
+            "recommendation": "Contact pharmacy benefit manager for coverage details"
+        }
+
+    # Get diagnosis from code
+    diagnosis = DIAGNOSIS_CODES.get(diagnosis_code, "unknown")
+
+    # Base approval rate from insurance type
+    base_rate = med_data["approval_rates"].get(insurance_type.lower(), 0.60)
+
+    # Apply age-based adjustments to approval probability
+    age_adjustment = 0
+    if age < 18:
+        age_adjustment = -0.10  # Pediatric often more complex
+    elif age > 65:
+        age_adjustment = 0.05  # Medicare coverage often better
+
+    # Apply diagnosis matching adjustments (on-label vs off-label use)
+    diagnosis_adjustment = 0
+    if diagnosis in med_data["common_diagnoses"]:
+        diagnosis_adjustment = 0.15  # On-label use
+    elif diagnosis == "unknown":
+        diagnosis_adjustment = -0.20  # Unknown diagnosis risky
+    else:
+        diagnosis_adjustment = -0.10  # Off-label use
+
+    # Combine all factors into final probability score
+    final_prob = base_rate + age_adjustment + diagnosis_adjustment
+    final_prob = max(0.05, min(0.95, final_prob))  # Clamp between 5-95%
+
+    # Convert probability to user-friendly confidence levels
+    if final_prob >= 0.75:
+        confidence = "High"
+        level = "High likelihood of approval"
+    elif final_prob >= 0.50:
+        confidence = "Medium"
+        level = "Medium likelihood of approval"
+    else:
+        confidence = "Low"
+        level = "Low likelihood of approval"
+
+    # Build explanation factors for transparency
+    factors = []
+    if diagnosis in med_data["common_diagnoses"]:
+        factors.append("✓ On-label indication")
+    else:
+        factors.append("⚠ Off-label or uncommon indication")
+
+    if insurance_type.lower() == "commercial":
+        factors.append("✓ Commercial insurance typically covers")
+    elif insurance_type.lower() == "medicare":
+        factors.append("~ Medicare coverage varies")
+    else:
+        factors.append("⚠ Medicaid coverage often limited")
+
+    if age > 65:
+        factors.append("✓ Age may favor approval")
+    elif age < 18:
+        factors.append("⚠ Pediatric use requires extra documentation")
+
+    recommendation = ""
+    if len(med_data["common_denials"]) > 0:
+        factors.append(f"Common issues: {', '.join(med_data['common_denials'])}")
+
+    recommendation = ""
+    if final_prob < 0.40:
+        recommendation = "Consider alternative medications or obtain prior authorization"
+    elif final_prob < 0.70:
+        recommendation = "Prepare supporting documentation for prior authorization"
+    else:
+        recommendation = "Good approval odds - submit standard prior auth request"
+
+    return {
+        "probability": round(final_prob, 2),
+        "confidence": confidence,
+        "level": level,
+        "factors": factors[:4],  # Limit to top 4 factors
+        "recommendation": recommendation
+    }
+
+
+# Complete HTML/CSS/JS frontend embedded in Python string
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Prior Authorization Predictor MVP</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #34495e;
+        }
+        input, select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        input:focus, select:focus {
+            border-color: #3498db;
+            outline: none;
+        }
+        .predict-btn {
+            background-color: #3498db;
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 5px;
+            font-size: 18px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 20px;
+        }
+        .predict-btn:hover {
+            background-color: #2980b9;
+        }
+        .result {
+            margin-top: 30px;
+            padding: 20px;
+            border-radius: 8px;
+            display: none;
+        }
+        .result.high {
+            background-color: #d4edda;
+            border: 2px solid #28a745;
+        }
+        .result.medium {
+            background-color: #fff3cd;
+            border: 2px solid #ffc107;
+        }
+        .result.low {
+            background-color: #f8d7da;
+            border: 2px solid #dc3545;
+        }
+        .result h3 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+        .probability {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .factors {
+            margin-top: 15px;
+        }
+        .factors ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .factors li {
+            margin: 5px 0;
+        }
+        .recommendation {
+            margin-top: 15px;
+            padding: 15px;
+            background-color: rgba(52, 73, 94, 0.1);
+            border-radius: 5px;
+            font-style: italic;
+        }
+        .loading {
+            text-align: center;
+            color: #7f8c8d;
+            display: none;
+        }
+        .med-list {
+            font-size: 12px;
+            color: #7f8c8d;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Prior Authorization Predictor</h1>
+        <p style="text-align: center; color: #7f8c8d;">MVP - Predict medication approval likelihood</p>
+
+        <form id="predictionForm">
+            <div class="form-group">
+                <label for="medication">Medication Name:</label>
+                <input type="text" id="medication" name="medication" placeholder="e.g., Humira, Keytruda, Ozempic" required>
+                <div class="med-list">Common: Humira, Keytruda, Enbrel, Ozempic, Remicade, Rituxan, Copaxone, Harvoni, Revlimid, Xeljanz</div>
+            </div>
+
+            <div class="form-group">
+                <label for="age">Patient Age:</label>
+                <input type="number" id="age" name="age" min="1" max="120" placeholder="e.g., 45" required>
+            </div>
+
+            <div class="form-group">
+                <label for="diagnosis">Diagnosis Code (ICD-10):</label>
+                <select id="diagnosis" name="diagnosis" required>
+                    <option value="">Select diagnosis code...</option>
+                    <option value="M05.9">M05.9 - Rheumatoid Arthritis</option>
+                    <option value="K50.9">K50.9 - Crohn's Disease</option>
+                    <option value="L40.0">L40.0 - Psoriasis</option>
+                    <option value="C78.0">C78.0 - Lung Cancer</option>
+                    <option value="C43.9">C43.9 - Melanoma</option>
+                    <option value="C67.9">C67.9 - Bladder Cancer</option>
+                    <option value="M07.3">M07.3 - Psoriatic Arthritis</option>
+                    <option value="M45.9">M45.9 - Ankylosing Spondylitis</option>
+                    <option value="E11.9">E11.9 - Type 2 Diabetes</option>
+                    <option value="E66.9">E66.9 - Obesity</option>
+                    <option value="K51.9">K51.9 - Ulcerative Colitis</option>
+                    <option value="C85.9">C85.9 - Lymphoma</option>
+                    <option value="G35">G35 - Multiple Sclerosis</option>
+                    <option value="B18.2">B18.2 - Hepatitis C</option>
+                    <option value="C90.0">C90.0 - Multiple Myeloma</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="insurance">Insurance Type:</label>
+                <select id="insurance" name="insurance" required>
+                    <option value="">Select insurance type...</option>
+                    <option value="commercial">Commercial</option>
+                    <option value="medicare">Medicare</option>
+                    <option value="medicaid">Medicaid</option>
+                </select>
+            </div>
+
+            <button type="submit" class="predict-btn">Predict Approval Likelihood</button>
+        </form>
+
+        <div class="loading" id="loading">
+            Analyzing approval probability...
+        </div>
+
+        <div class="result" id="result">
+            <h3 id="resultTitle"></h3>
+            <div class="probability" id="probability"></div>
+            <div class="factors" id="factors"></div>
+            <div class="recommendation" id="recommendation"></div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('predictionForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            // Show loading
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
+
+            // Get form data
+            const formData = new FormData(this);
+            const data = {
+                medication: formData.get('medication'),
+                age: parseInt(formData.get('age')),
+                diagnosis_code: formData.get('diagnosis'),
+                insurance_type: formData.get('insurance')
+            };
+
+            try {
+                // Make prediction request
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                const result = await response.json();
+
+                // Hide loading
+                document.getElementById('loading').style.display = 'none';
+
+                // Show results
+                const resultDiv = document.getElementById('result');
+                const confidence = result.confidence.toLowerCase();
+
+                resultDiv.className = 'result ' + confidence;
+                resultDiv.style.display = 'block';
+
+                document.getElementById('resultTitle').textContent = result.level;
+                document.getElementById('probability').textContent = 
+                    `${Math.round(result.probability * 100)}% approval probability`;
+
+                // Show factors
+                const factorsHtml = '<strong>Key Factors:</strong><ul>' + 
+                    result.factors.map(factor => `<li>${factor}</li>`).join('') + 
+                    '</ul>';
+                document.getElementById('factors').innerHTML = factorsHtml;
+
+                document.getElementById('recommendation').innerHTML = 
+                    '<strong>Recommendation:</strong> ' + result.recommendation;
+
+            } catch (error) {
+                document.getElementById('loading').style.display = 'none';
+                alert('Error making prediction. Please try again.');
+                console.error('Error:', error);
+            }
+        });
+    </script>
+</body>
+</html>
+"""
+
+
+@app.route('/')
+def index():
+    """Main page - serves the web interface"""
+    return render_template_string(HTML_TEMPLATE)
+
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    """API endpoint for making predictions"""
+    try:
+        data = request.get_json()
+
+        # Validate input data
+        required_fields = ['medication', 'age', 'diagnosis_code', 'insurance_type']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+
+        # Run prediction algorithm
+        result = ai_predict_approval(
+            data['medication'],
+            data['age'],
+            data['diagnosis_code'],
+            data['insurance_type']
+        )
+
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/medications')
+def list_medications():
+    """API endpoint to list available medications"""
+    meds = []
+    for key, data in MEDICATIONS_DB.items():
+        meds.append({
+            'key': key,
+            'name': data['name'],
+            'cost_tier': data['cost_tier'],
+            'common_diagnoses': data['common_diagnoses']
+        })
+    return jsonify(meds)
+
+
+if __name__ == '__main__':
+    # Train AI model on startup
+    print("Training AI model...")
+    train_ai_model()
+
+    # Development server startup
+    print("Starting Prior Authorization Predictor MVP...")
+    print("Available at: http://localhost:5000")
+    print("\nMock medications in database:")
+    for key, data in MEDICATIONS_DB.items():
+        print(f"  - {data['name']}")
+
+    app.run(debug=True, host='0.0.0.0', port=5000)
