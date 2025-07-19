@@ -5,17 +5,17 @@ A single-file Flask web application that predicts medication prior authorization
 
 
 
-What it does
+What it does: 
 Enter a medication name, patient details, and insurance info → Get instant approval probability with AI-powered insights and actionable next steps.
 Key features
 
-🤖 AI-Enhanced: Machine learning + rule-based predictions (70%+ accuracy)
-⚡ Instant Results: Real-time approval probability calculation
-📊 Clear Insights: Shows exactly why approval is likely/unlikely
-💊 10 Common Meds: Pre-loaded with expensive specialty medications
-🏥 All Insurance Types: Commercial, Medicare, Medicaid coverage
-🎯 Actionable: Specific recommendations for each scenario
-🚀 Single File: Deploy anywhere in minutes
+AI-Enhanced: Machine learning + rule-based predictions (70%+ accuracy)
+Instant Results: Real-time approval probability calculation
+Clear Insights: Shows exactly why approval is likely/unlikely
+10 Common Meds: Pre-loaded with expensive specialty medications
+All Insurance Types: Commercial, Medicare, Medicaid coverage
+Actionable: Specific recommendations for each scenario
+Single File: Deploy anywhere in minutes
 
 Perfect for
 
